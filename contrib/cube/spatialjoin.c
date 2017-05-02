@@ -137,7 +137,7 @@ dequeue(Queue* queue)
  */
 static void
 addPendingPair(CrossmatchContext *ctx, BlockNumber blk1, BlockNumber blk2,
-			   GistNSN parentlsn1, GistNSN parentlsn2)
+			   GistNSN parentlsn1, GistNSN parentlsn2,NDBOX*box1,NDBOX*box2)
 {
 	PendingPair blockNumberPair;
 
@@ -146,6 +146,8 @@ addPendingPair(CrossmatchContext *ctx, BlockNumber blk1, BlockNumber blk2,
 	blockNumberPair.blk2 = blk2;
 	blockNumberPair.parentlsn1 = parentlsn1;
 	blockNumberPair.parentlsn2 = parentlsn2;
+	blockNumberPair.box1 = box1;
+	blockNumberPair.box2 = box2;
 	stackPush(&ctx->pendingPairs,blockNumberPair);
 }
 
@@ -194,7 +196,7 @@ setupFirstcallNode(CrossmatchContext *ctx, Oid idx1, Oid idx2)
 	 * roots.
 	 */
 	addPendingPair(ctx, GIST_ROOT_BLKNO, GIST_ROOT_BLKNO,
-				   parentnsn, parentnsn);
+				   parentnsn, parentnsn,NULL,NULL);
 }
 
 
@@ -335,22 +337,34 @@ cube_union_pi(PointInfo *a, int n)
 	return (result);
 }
 
-
+static NDBOX*
+copyCube(NDBOX*cube)
+{
+	size_t size = IS_POINT(cube)? POINT_SIZE(DIM(cube)):CUBE_SIZE(DIM(cube));
+	NDBOX* result = palloc(size);
+	memmove(result,cube,size);
+	return result;
+}
 
 /*
  * Line sweep algorithm on points for find resulting pairs.
  */
 static void
 pointLineSweep(CrossmatchContext *ctx, PointInfo *points1, int count1,
-			   PointInfo *points2, int count2, MemoryContext workContext)
+			   PointInfo *points2, int count2, MemoryContext workContext, NDBOX* box1, NDBOX*box2)
 {
 	int	i1,i2;
 	int i3 = 0;
-	NDBOX* x = cube_intersect_v0(cube_union_pi(points1,count1),cube_union_pi(points2,count2));
+	NDBOX* x1 = box1;
+	NDBOX* x2 = box2;
+	if(!x1)
+		x1 = cube_union_pi(points1,count1);
+	if(!x2)
+		x2 = cube_union_pi(points2,count2);
 	MemoryContextSwitchTo(workContext);
 	for (i2 = 0; i2 < count2; i2++)
 	{
-		if(cube_overlap_v0(x,points2[i2].cube))
+		if(cube_overlap_v0(x1,points2[i2].cube))
 		{
 			points2[i3]	= points2[i2];
 			i3++;
@@ -360,7 +374,7 @@ pointLineSweep(CrossmatchContext *ctx, PointInfo *points1, int count1,
 
 	for (i1 = 0; i1 < count1; i1++)
 	{
-		if(!cube_overlap_v0(points1[i1].cube,x))
+		if(!cube_overlap_v0(points1[i1].cube,x2))
 			continue;
 
 		for (i2 = 0; i2 < i3; i2++)
@@ -372,6 +386,8 @@ pointLineSweep(CrossmatchContext *ctx, PointInfo *points1, int count1,
 				}
 	}
 
+	pfree(x1);
+	pfree(x2);
 }
 
 /*
@@ -406,18 +422,23 @@ fillPointInfo(PointInfo *point, CrossmatchContext *ctx, IndexTuple itup,
  */
 static void
 box3DLineSweep(CrossmatchContext *ctx, Box3DInfo *boxes1, int count1,
-			   Box3DInfo *boxes2, int count2, MemoryContext workContext)
+			   Box3DInfo *boxes2, int count2, MemoryContext workContext, NDBOX* box1, NDBOX*box2)
 {
 	int	i1,i2;
 
 
 	int i3 = 0;
-	NDBOX* x = cube_intersect_v0(cube_union_b3(boxes1,count1),cube_union_b3(boxes2,count2));
+	NDBOX* x1 = box1;
+	NDBOX* x2 = box2;
+	if(!x1)
+		x1 = cube_union_b3(boxes1,count1);
+	if(!x2)
+		x2 = cube_union_b3(boxes2,count2);
 	MemoryContextSwitchTo(workContext);
 
 	for (i2 = 0; i2 < count2; i2++)
 	{
-		if(cube_overlap_v0(x,boxes2[i2].cube))
+		if(cube_overlap_v0(x1,boxes2[i2].cube))
 		{
 			boxes2[i3]	= boxes2[i2];
 			i3++;
@@ -428,7 +449,7 @@ box3DLineSweep(CrossmatchContext *ctx, Box3DInfo *boxes1, int count1,
 	for (i1 = 0; i1 < count1; i1++)
 	{
 
-		if(!cube_overlap_v0(boxes1[i1].cube,x))
+		if(!cube_overlap_v0(boxes1[i1].cube,x2))
 			continue;
 
 		for (i2 = 0; i2 < i3; i2++)
@@ -436,10 +457,13 @@ box3DLineSweep(CrossmatchContext *ctx, Box3DInfo *boxes1, int count1,
 					if(cube_overlap_v0(boxes1[i1].cube,boxes2[i2].cube))
 					{
 						addPendingPair(ctx, boxes1[i1].blk, boxes2[i2].blk,
-									   boxes1[i1].parentlsn, boxes2[i2].parentlsn);
+									   boxes1[i1].parentlsn, boxes2[i2].parentlsn, copyCube(boxes1[i1].cube), copyCube(boxes2[i2].cube));
 					}
 				}
 	}
+
+	pfree(x1);
+	pfree(x2);
 }
 
 /*
@@ -475,7 +499,7 @@ fillBox3DInfo(Box3DInfo *box3d, CrossmatchContext *ctx, IndexTuple itup,
  */
 static void
 scanForPendingPages(CrossmatchContext *ctx, Buffer *buf, BlockNumber otherblk,
-	   int num, GistNSN parentlsn, GistNSN otherParentlsn)
+	   int num, GistNSN parentlsn, GistNSN otherParentlsn,NDBOX*box1,NDBOX*box2)
 {
 	Page		page;
 	OffsetNumber maxoff,
@@ -508,12 +532,12 @@ scanForPendingPages(CrossmatchContext *ctx, Buffer *buf, BlockNumber otherblk,
 			if (num == 1)
 			{
 				addPendingPair(ctx, childblkno, otherblk,
-							   PageGetLSN(page), otherParentlsn);
+							   PageGetLSN(page), otherParentlsn, box1, box2);
 			}
 			else
 			{
 				addPendingPair(ctx, otherblk, childblkno,
-							   otherParentlsn, PageGetLSN(page));
+							   otherParentlsn, PageGetLSN(page), box1, box2);
 			}
 		}
 
@@ -664,7 +688,7 @@ readBoxes(CrossmatchContext *ctx, Buffer *buf, GistNSN parentlsn, int num,
  */
 static void
 processPendingPair(CrossmatchContext *ctx, BlockNumber blk1, BlockNumber blk2,
-				   GistNSN parentlsn1, GistNSN parentlsn2)
+				   GistNSN parentlsn1, GistNSN parentlsn2,NDBOX*box1,NDBOX*box2)
 {
 	Buffer		buf1,
 				buf2;
@@ -689,7 +713,7 @@ processPendingPair(CrossmatchContext *ctx, BlockNumber blk1, BlockNumber blk2,
 		//int32		key[6];
 
 		//getPointsBoundKey(ctx, &buf1, parentlsn1, 1, key);
-		scanForPendingPages(ctx, &buf2, blk1, 2, parentlsn2, parentlsn1);
+		scanForPendingPages(ctx, &buf2, blk1, 2, parentlsn2, parentlsn1, box1, box2);
 	}
 	else if (!GistPageIsLeaf(page1) && GistPageIsLeaf(page2))
 	{
@@ -700,7 +724,7 @@ processPendingPair(CrossmatchContext *ctx, BlockNumber blk1, BlockNumber blk2,
 		//int32		key[6];
 
 		//getPointsBoundKey(ctx, &buf2, parentlsn2, 2, key);
-		scanForPendingPages(ctx, &buf1, blk2, 1, parentlsn1, parentlsn2);
+		scanForPendingPages(ctx, &buf1, blk2, 1, parentlsn1, parentlsn2, box1, box2);
 	}
 	else if (GistPageIsLeaf(page1) && GistPageIsLeaf(page2))
 	{
@@ -717,7 +741,7 @@ processPendingPair(CrossmatchContext *ctx, BlockNumber blk1, BlockNumber blk2,
 		points2 = readPoints(ctx, &buf2, parentlsn2, 2, &pi2);
 
 
-		pointLineSweep(ctx, points1, pi1, points2, pi2, saveContext);
+		pointLineSweep(ctx, points1, pi1, points2, pi2, saveContext, box1, box2);
 
 		MemoryContextDelete(tempCtx);
 	}
@@ -736,7 +760,7 @@ processPendingPair(CrossmatchContext *ctx, BlockNumber blk1, BlockNumber blk2,
 		boxes2 = readBoxes(ctx, &buf2, parentlsn2, 2, &bi2);
 
 
-		box3DLineSweep(ctx, boxes1, bi1, boxes2, bi2, saveContext);
+		box3DLineSweep(ctx, boxes1, bi1, boxes2, bi2, saveContext, box1, box2);
 		MemoryContextDelete(tempCtx);
 	}
 
@@ -758,7 +782,7 @@ crossmatch(CrossmatchContext *ctx, ItemPointer values)
 
 
 		processPendingPair(ctx, blockNumberPair.blk1, blockNumberPair.blk2,
-					 blockNumberPair.parentlsn1, blockNumberPair.parentlsn2);
+					 blockNumberPair.parentlsn1, blockNumberPair.parentlsn2,blockNumberPair.box1,blockNumberPair.box2);
 	}
 
 	/* Return next result pair if any. Otherwise close SRF. */

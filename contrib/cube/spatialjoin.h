@@ -49,6 +49,8 @@ typedef struct
 				parentlsn2;
 	BlockNumber blk1,
 				blk2;
+	NDBOX*		box1;
+	NDBOX*		box2;
 } PendingPair;
 
 
@@ -61,7 +63,7 @@ typedef struct
 				iptr2;
 } ResultPair;
 
-#define QueueSegmentSize 256
+#define QueueSegmentSize 250
 
 typedef struct QueueSegment
 {
