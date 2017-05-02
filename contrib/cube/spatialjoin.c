@@ -24,6 +24,114 @@
 #define heap_formtuple heap_form_tuple
 #endif
 
+
+
+static void initStack(Stack*queue)
+{
+	queue->head_index = 0;
+	queue->head = palloc(sizeof(StackSegment));
+	queue->backlog = NULL;
+}
+
+static void
+stackPush(Stack* queue, PendingPair pair)
+{
+	queue->head->Data[queue->head_index] = pair;
+	queue->head_index++;
+	queue->count++;
+
+	if(queue->head_index == QueueSegmentSize)
+	{
+		StackSegment* newHead;
+		if(queue->backlog)
+		{
+			newHead = queue->backlog;
+			queue->backlog = queue->backlog->NextSegment;
+		}
+		else
+		{
+			newHead = palloc(sizeof(StackSegment));
+		}
+		newHead->NextSegment = queue->head;
+		queue->head = newHead;
+
+		queue->head_index = 0;
+	}
+}
+
+static PendingPair
+stackPop(Stack* queue)
+{
+	PendingPair pair;
+	if(queue->head_index == 0)
+		{
+		StackSegment* newHead = queue->head->NextSegment;
+			queue->head->NextSegment = queue->backlog;
+			queue->backlog = queue->head;
+			queue->head = newHead;
+			queue->head_index = QueueSegmentSize;
+		}
+
+	queue->head_index--;
+	pair = queue->head->Data[queue->head_index];
+
+	queue->count--;
+
+	return pair;
+}
+
+static void initQueue(Queue*queue)
+{
+	queue->head_index = 0;
+	queue->tail_index = 0;
+	queue->head = queue->tail = palloc(sizeof(QueueSegment));
+	queue->backlog = NULL;
+}
+
+static void
+enqueue(Queue* queue, ResultPair pair)
+{
+	queue->tail->Data[queue->tail_index] = pair;
+	queue->tail_index++;
+	queue->count++;
+	if(queue->tail_index == QueueSegmentSize)
+	{
+		if(queue->backlog)
+		{
+			queue->tail->NextSegment = queue->backlog;
+			queue->backlog = queue->backlog->NextSegment;
+		}
+		else
+		{
+			queue->tail->NextSegment = palloc(sizeof(QueueSegment));
+		}
+
+		queue->tail = queue->tail->NextSegment;
+		queue->tail_index = 0;
+	}
+}
+
+static ResultPair
+dequeue(Queue* queue)
+{
+	ResultPair pair = queue->head->Data[queue->head_index];
+
+	queue->head_index++;
+	queue->count--;
+	if(queue->head_index == QueueSegmentSize)
+	{
+		QueueSegment* newHead = queue->head->NextSegment;
+		queue->head->NextSegment = queue->backlog;
+		queue->backlog = queue->head;
+		queue->head = newHead;
+		queue->head_index = 0;
+
+	}
+
+	return pair;
+}
+
+
 /*
  * Add pending pages pair to context.
  */
@@ -31,15 +139,14 @@ static void
 addPendingPair(CrossmatchContext *ctx, BlockNumber blk1, BlockNumber blk2,
 			   GistNSN parentlsn1, GistNSN parentlsn2)
 {
-	PendingPair *blockNumberPair;
+	PendingPair blockNumberPair;
 
 	/* Add pending pair */
-	blockNumberPair = (PendingPair *) palloc(sizeof(PendingPair));
-	blockNumberPair->blk1 = blk1;
-	blockNumberPair->blk2 = blk2;
-	blockNumberPair->parentlsn1 = parentlsn1;
-	blockNumberPair->parentlsn2 = parentlsn2;
-	ctx->pendingPairs = lcons(blockNumberPair, ctx->pendingPairs);
+	blockNumberPair.blk1 = blk1;
+	blockNumberPair.blk2 = blk2;
+	blockNumberPair.parentlsn1 = parentlsn1;
+	blockNumberPair.parentlsn2 = parentlsn2;
+	stackPush(&ctx->pendingPairs,blockNumberPair);
 }
 
 /*
@@ -48,15 +155,13 @@ addPendingPair(CrossmatchContext *ctx, BlockNumber blk1, BlockNumber blk2,
 static void
 addResultPair(CrossmatchContext *ctx, ItemPointer iptr1, ItemPointer iptr2)
 {
-	ResultPair *itemPointerPair;
+	ResultPair itemPointerPair;
 
 	/* Add result pair */
-	itemPointerPair = (ResultPair *)
-		palloc(sizeof(ResultPair));
-	itemPointerPair->iptr1 = *iptr1;
-	itemPointerPair->iptr2 = *iptr2;
-	ctx->resultsPairs = lappend(ctx->resultsPairs, itemPointerPair);
 
+	itemPointerPair.iptr1 = *iptr1;
+	itemPointerPair.iptr2 = *iptr2;
+	enqueue(&ctx->resultsPairs, itemPointerPair);
 }
 
 
@@ -81,6 +186,8 @@ setupFirstcallNode(CrossmatchContext *ctx, Oid idx1, Oid idx2)
 
 	ctx->indexes[0] = index_open(idx1, AccessShareLock);
 	ctx->indexes[1] = index_open(idx2, AccessShareLock);
+	initStack(&ctx->pendingPairs);
+	initQueue(&ctx->resultsPairs);
 
 	/*
 	 * Add first pending pair of pages: we start scan both indexes from their
@@ -642,25 +749,23 @@ void
 crossmatch(CrossmatchContext *ctx, ItemPointer values)
 {
 	/* Scan pending pairs until we have some result pairs */
-	while (ctx->resultsPairs == NIL && ctx->pendingPairs != NIL)
+	while (ctx->resultsPairs.count == 0 && ctx->pendingPairs.count)
 	{
 		PendingPair blockNumberPair;
 
 
-		blockNumberPair = *((PendingPair *) linitial(ctx->pendingPairs));
-		pfree(linitial(ctx->pendingPairs));
-		ctx->pendingPairs = list_delete_first(ctx->pendingPairs);
+		blockNumberPair = stackPop(&ctx->pendingPairs);
+
 
 		processPendingPair(ctx, blockNumberPair.blk1, blockNumberPair.blk2,
 					 blockNumberPair.parentlsn1, blockNumberPair.parentlsn2);
 	}
 
 	/* Return next result pair if any. Otherwise close SRF. */
-	if (ctx->resultsPairs != NIL)
+	if (ctx->resultsPairs.count != 0)
 	{
-		ResultPair itemPointerPair = *((ResultPair *) linitial(ctx->resultsPairs));
-		pfree(linitial(ctx->resultsPairs));
-		ctx->resultsPairs = list_delete_first(ctx->resultsPairs);
+		ResultPair itemPointerPair = dequeue(&ctx->resultsPairs);
+
 
 		values[0] = itemPointerPair.iptr1;
 		values[1] = itemPointerPair.iptr2;

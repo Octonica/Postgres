@@ -41,18 +41,6 @@
 #endif
 
 /*
- * Context of crossmatch: represents data which are persistent across SRF calls.
- */
-typedef struct CrossmatchContext
-{
-	MemoryContext context;
-	Relation	indexes[2];
-	List	   *pendingPairs;
-	List	   *resultsPairs;
-	NDBOX	   *box;
-} CrossmatchContext;
-
-/*
  * Pair of pages for pending scan.
  */
 typedef struct
@@ -63,6 +51,7 @@ typedef struct
 				blk2;
 } PendingPair;
 
+
 /*
  * Resulting pair of item pointer for return by CRF.
  */
@@ -71,6 +60,53 @@ typedef struct
 	ItemPointerData iptr1,
 				iptr2;
 } ResultPair;
+
+#define QueueSegmentSize 256
+
+typedef struct QueueSegment
+{
+	ResultPair Data[QueueSegmentSize];
+	struct QueueSegment* NextSegment;
+} QueueSegment;
+
+typedef struct
+{
+	int head_index;
+	int tail_index;
+	int count;
+	QueueSegment* head;
+	QueueSegment* tail;
+	QueueSegment* backlog;
+} Queue;
+
+
+
+
+typedef struct StackSegment
+{
+	PendingPair Data[QueueSegmentSize];
+	struct StackSegment* NextSegment;
+} StackSegment;
+
+typedef struct
+{
+	int head_index;
+	int count;
+	StackSegment* head;
+	StackSegment* backlog;
+} Stack;
+
+/*
+ * Context of crossmatch: represents data which are persistent across SRF calls.
+ */
+typedef struct CrossmatchContext
+{
+	MemoryContext context;
+	Relation	indexes[2];
+	Stack	    pendingPairs;
+	Queue	    resultsPairs;
+	NDBOX	   *box;
+} CrossmatchContext;
 
 typedef struct
 {
