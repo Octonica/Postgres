@@ -550,6 +550,8 @@ gistdentryinit(GISTSTATE *giststate, int nkey, GISTENTRY *e,
 		GISTENTRY  *dep;
 
 		gistentryinit(*e, k, r, pg, o, l);
+		if(!giststate->compressed[nkey])
+			return;
 		dep = (GISTENTRY *)
 			DatumGetPointer(FunctionCall1Coll(&giststate->decompressFn[nkey],
 										   giststate->supportCollation[nkey],
@@ -585,10 +587,10 @@ gistFormTuple(GISTSTATE *giststate, Relation r,
 
 			gistentryinit(centry, attdata[i], r, NULL, (OffsetNumber) 0,
 						  isleaf);
-			cep = (GISTENTRY *)
-				DatumGetPointer(FunctionCall1Coll(&giststate->compressFn[i],
-											  giststate->supportCollation[i],
-												  PointerGetDatum(&centry)));
+			cep = giststate->compressed[i] ?
+								(GISTENTRY *) DatumGetPointer(FunctionCall1Coll(&giststate->compressFn[i],
+														  giststate->supportCollation[i], PointerGetDatum(&centry)))
+								: &centry;
 			compatt[i] = cep->key;
 		}
 	}
