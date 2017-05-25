@@ -1453,12 +1453,23 @@ initGISTstate(Relation index)
 		fmgr_info_copy(&(giststate->unionFn[i]),
 					   index_getprocinfo(index, i + 1, GIST_UNION_PROC),
 					   scanCxt);
-		fmgr_info_copy(&(giststate->compressFn[i]),
+		if (OidIsValid(index_getprocid(index, i + 1, GIST_COMPRESS_PROC)))
+		{
+			fmgr_info_copy(&(giststate->compressFn[i]),
 					   index_getprocinfo(index, i + 1, GIST_COMPRESS_PROC),
-					   scanCxt);
-		fmgr_info_copy(&(giststate->decompressFn[i]),
+					   	   scanCxt);
+			fmgr_info_copy(&(giststate->decompressFn[i]),
 					   index_getprocinfo(index, i + 1, GIST_DECOMPRESS_PROC),
 					   scanCxt);
+			giststate->compressed[i] = true;
+		}
+		else
+		{
+			giststate->compressFn[i].fn_oid = InvalidOid;
+			giststate->decompressFn[i].fn_oid = InvalidOid;
+			giststate->compressed[i] = false;
+		}
+
 		fmgr_info_copy(&(giststate->penaltyFn[i]),
 					   index_getprocinfo(index, i + 1, GIST_PENALTY_PROC),
 					   scanCxt);

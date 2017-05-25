@@ -94,6 +94,8 @@ typedef struct GISTSTATE
 
 	/* Collations to pass to the support functions */
 	Oid			supportCollation[INDEX_MAX_KEYS];
+
+	bool		compressed[INDEX_MAX_KEYS];
 } GISTSTATE;
 
 

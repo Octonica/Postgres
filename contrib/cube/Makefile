@@ -8,7 +8,7 @@ CUSTOM_COPT = -O3
 #-msse4.2 -funroll-loops -ftree-vectorize -mavx
 
 EXTENSION = cube
-DATA = cube--1.2.sql cube--1.1--1.2.sql cube--1.0--1.1.sql \
+DATA =  cube--1.2--1.3.sql cube--1.2.sql cube--1.1--1.2.sql cube--1.0--1.1.sql \
 	cube--unpackaged--1.0.sql
 PGFILEDESC = "cube - multidimensional cube data type"
 
