@@ -1082,6 +1082,8 @@ StartLogicalReplication(StartReplicationCmd *cmd)
 	/* Start reading WAL from the oldest required WAL. */
 	logical_startptr = MyReplicationSlot->data.restart_lsn;
 
+	streamingDoneSending = streamingDoneReceiving = false;
+
 	/*
 	 * Report the location after which we'll send out further commits as the
 	 * current sentPtr.
