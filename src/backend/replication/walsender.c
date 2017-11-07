@@ -176,8 +176,8 @@ static bool waiting_for_ping_response = false;
  * after that. streamingDoneReceiving is set to true when we receive CopyDone
  * from the other end. When both become true, it's time to exit Copy mode.
  */
-static bool streamingDoneSending;
-static bool streamingDoneReceiving;
+static bool streamingDoneSending = true;
+static bool streamingDoneReceiving = true;
 
 /* Are we there yet? */
 static bool WalSndCaughtUp = false;
@@ -1522,6 +1522,21 @@ exec_replication_command(const char *cmd_string)
 				StartReplicationCmd *cmd = (StartReplicationCmd *) cmd_node;
 
 				PreventTransactionChain(true, "START_REPLICATION");
+
+				/* Check if the sender is already in copy mode. */
+				char *copyMode = NULL;
+				if(!streamingDoneReceiving && !streamingDoneSending)
+					copyMode = "copy-both";
+				else if(!streamingDoneReceiving)
+					copyMode = "copy-in";
+				else if(!streamingDoneSending)
+					copyMode = "copy-out";
+
+				if(copyMode)
+					ereport(ERROR,
+							(errcode(ERRCODE_PROTOCOL_VIOLATION),
+							 errmsg("unexpected START_REPLICATION command in %s mode",
+									copyMode)));
 
 				if (cmd->kind == REPLICATION_KIND_PHYSICAL)
 					StartReplication(cmd);
